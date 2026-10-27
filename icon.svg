@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Model usage gauge">
+  <rect width="64" height="64" rx="14" fill="#16202b"/>
+  <path d="M15 43a17 17 0 0 1 34 0" fill="none" stroke="#39485c" stroke-width="6" stroke-linecap="round"/>
+  <path d="M15 43a17 17 0 0 1 11.4-16.1" fill="none" stroke="#4fc3a1" stroke-width="6" stroke-linecap="round"/>
+  <path d="M32 43 41 31" fill="none" stroke="#e8eef5" stroke-width="3.2" stroke-linecap="round"/>
+  <circle cx="32" cy="43" r="4" fill="#e8eef5"/>
+</svg>

@@ -1,0 +1,24 @@
+# dsh-model-usage：会话输入框下方的订阅额度 pill。
+#
+# 一个 meter = 一个订阅 = 一把 key。providers 写该订阅可服务的路由名，
+# keyRef 写 provider 配置里 apiKeyEnv 的变量名；换到另一条路由的模型时，
+# 插件会改用那条路由对应的 key 查询，不需要重启。
+#
+# opencode-go-2 默认占位：只有当前会话真的切到该路由时才会去查询，
+# 未配置 OPENCODE_GO_2_API_KEY 时只显示“未配置凭据”，不会影响 opencode-go。
+- insert:
+    - id: dsh-model-usage
+      name: dsh-model-usage
+      config:
+        refreshSeconds: 60
+        meters:
+          - id: opencode-go
+            label: opencode-go
+            providers: [opencode-go]
+            baseURL: https://opencode.ai/zen/go/v1
+            keyRef: OPENCODE_GO_API_KEY
+          - id: opencode-go-2
+            label: opencode-go 备用
+            providers: [opencode-go-2]
+            baseURL: https://opencode.ai/zen/go/v1
+            keyRef: OPENCODE_GO_2_API_KEY

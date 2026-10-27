@@ -1,0 +1,63 @@
+{
+  "name": "dsh-model-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 输入框下方的订阅额度 pill：显示 opencode-go 的 5 小时 / 本周 / 本月用量与重置时间。",
+  "exports": {
+    ".": "./index.js",
+    "./usage": "./usage.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "usage.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "usage",
+    "quota",
+    "opencode-go"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.1"
+    }
+  },
+  "license": "MIT",
+  "author": "kabarryo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kabarryo/dsh-model-usage.git"
+  },
+  "homepage": "https://github.com/kabarryo/dsh-model-usage#readme",
+  "bugs": {
+    "url": "https://github.com/kabarryo/dsh-model-usage/issues"
+  }
+}
