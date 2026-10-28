@@ -24,7 +24,9 @@ DSH 的模型额度插件。在会话输入框下方的状态区加一枚 pill�
 5H 26% · W 23% · M 25%
 ```
 
-点开是明细层：三个窗口各一条进度条、百分比、重置时间与倒计时，底部是数据新鲜度和刷新按钮。占用到 80% 转黄、95% 转红。
+点开是明细层：三个窗口各一条进度条、百分比、重置时间与倒计时，底部是数据新鲜度和刷新按钮。
+
+进度条按用量分五档：绿（0–69%）、黄（70–79%）、橙（80–89%）、红（90–99%），到 100% 或端点拒绝时转红并在 pill 图标位与行首出现 ⚠。橙色没有专用主题 token，用黄红两色混合，浅色主题随 token 自动换算。
 
 ## 数据来源与口径
 
@@ -125,8 +127,8 @@ plugin_manager remove_bundle target=dsh-model-usage
 纯 JS，无构建步骤：Host 半 `index.js`（路由 + 缓存 + 凭据解析），纯函数在 `usage.js`，客户端半 `client.js`（`window.__ModuleLoader__.load` 注册到 `conversation.composer.dock`）。
 
 ```bash
-node --test test/usage.test.mjs      # 解析 / meter 路由 / URL 拼接，9 项
-node scripts/client-wiring.mjs       # 模块装载与槽位注册
+npm test                             # 解析 / meter 路由 / URL 拼接 / 五档阈值，14 项
+npm run check:wiring                 # 模块装载与槽位注册
 node scripts/smoke.mjs               # 真实端点全链路（读本机凭据，不打印、不上传）
 ```
 

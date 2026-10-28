@@ -40,8 +40,6 @@ window.__ModuleLoader__.load({
 .mu-pill:hover,.mu-pill[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}
 .mu-pill svg{width:${ICON_SIZE}px;height:${ICON_SIZE}px;flex:none}
 .mu-sep{color:var(--dsw-alias-separator-primary);margin:0 4px}
-.mu-warn{color:var(--dsw-alias-state-warn-primary)}
-.mu-danger{color:var(--dsw-alias-state-error-primary)}
 .mu-panel{position:fixed;z-index:1100;box-sizing:border-box;padding:16px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);backdrop-filter:var(--dsw-menu-backdrop-filter);box-shadow:var(--dsw-elevation-prominent);font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);cursor:default}
 .mu-title{display:flex;justify-content:space-between;gap:16px;margin-bottom:8px;color:var(--dsw-alias-label-primary);font-weight:500}
 .mu-rule{margin-bottom:10px;border-top:0.5px solid var(--dsw-alias-border-l2)}
@@ -49,8 +47,6 @@ window.__ModuleLoader__.load({
 .mu-name{color:var(--dsw-alias-label-tertiary)}
 .mu-bar{position:relative;display:block;height:4px;border-radius:2px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
 .mu-fill{position:absolute;top:0;bottom:0;left:0;border-radius:2px;background:var(--dsw-alias-brand-primary)}
-.mu-fill.mu-warn{background:var(--dsw-alias-state-warn-primary)}
-.mu-fill.mu-danger{background:var(--dsw-alias-state-error-primary)}
 .mu-pct{text-align:right;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
 .mu-reset{margin:2px 0 0 66px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
 .mu-note{margin-top:12px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
@@ -58,6 +54,19 @@ window.__ModuleLoader__.load({
 .mu-btn{border:0;padding:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;cursor:pointer}
 .mu-btn:hover{text-decoration:underline}
 .mu-error{margin-top:10px;color:var(--dsw-alias-state-error-primary);line-height:16px}
+/* 五档用量色（绿 / 黄 / 橙 / 红 / 红+⚠）。放在最后，靠同权重的后手声明
+   盖住 .mu-pct / .mu-name / .mu-reset 的静态色。橙色没有专用 token，用黄红
+   混合；不支持 color-mix 的引擎退回上一行声明的黄色，不会出现空条。 */
+.mu-t-ok{color:var(--dsw-alias-state-success-primary)}
+.mu-t-warm{color:var(--dsw-alias-state-warn-primary)}
+.mu-t-hot{color:var(--dsw-alias-state-warn-primary)}
+.mu-t-hot{color:color-mix(in oklab,var(--dsw-alias-state-warn-primary) 50%,var(--dsw-alias-state-error-primary))}
+.mu-t-danger{color:var(--dsw-alias-state-error-primary)}
+.mu-fill.mu-t-ok{background:var(--dsw-alias-state-success-primary)}
+.mu-fill.mu-t-warm{background:var(--dsw-alias-state-warn-primary)}
+.mu-fill.mu-t-hot{background:var(--dsw-alias-state-warn-primary)}
+.mu-fill.mu-t-hot{background:color-mix(in oklab,var(--dsw-alias-state-warn-primary) 50%,var(--dsw-alias-state-error-primary))}
+.mu-fill.mu-t-danger{background:var(--dsw-alias-state-error-primary)}
 `
 
     /**
@@ -84,15 +93,48 @@ window.__ModuleLoader__.load({
     const pad2 = value => String(value).padStart(2, '0')
 
     /**
-     * Tone class for one window's percentage.
+     * Usage band for one window: green below 70, then yellow, orange and red
+     * every ten points, so the jump into "about to run out" is gradual.
      * @param {number} percent - used share.
-     * @returns {string} `mu-warn`, `mu-danger`, or an empty string.
+     * @returns {'ok' | 'warm' | 'hot' | 'danger' | ''} band id, empty when unknown.
      */
-    function toneOf(percent) {
+    function tierOf(percent) {
       if (!Number.isFinite(percent)) return ''
-      if (percent >= 95) return 'mu-danger'
-      if (percent >= 80) return 'mu-warn'
-      return ''
+      if (percent >= 90) return 'danger'
+      if (percent >= 80) return 'hot'
+      if (percent >= 70) return 'warm'
+      return 'ok'
+    }
+
+    /**
+     * Text tone class. Green stays neutral on purpose: only the bands that ask
+     * for attention colour the number.
+     * @param {string} tier - band id.
+     * @returns {string} tone class, empty for `ok` and unknown.
+     */
+    function toneClass(tier) {
+      return tier === '' || tier === 'ok' ? '' : `mu-t-${tier}`
+    }
+
+    /**
+     * Bar fill classes.
+     * @param {string} tier - band id.
+     * @returns {string} class list.
+     */
+    function fillClass(tier) {
+      return tier === '' ? 'mu-fill' : `mu-fill mu-t-${tier}`
+    }
+
+    /**
+     * Whether a window is spent: the percentage reached the cap, or the
+     * endpoint reports a status other than `ok`/`unknown`.
+     * @param {{ percent: number, status: string } | null} value - window value.
+     * @returns {boolean} true when no more usage is allowed in this window.
+     */
+    function isExhausted(value) {
+      if (value === null || value === undefined) return false
+      if (value.percent >= 100) return true
+      return value.status !== 'ok' && value.status !== 'unknown'
     }
 
     /**
@@ -136,7 +178,11 @@ window.__ModuleLoader__.load({
      * @returns {string} readable summary.
      */
     function summaryOf(rows) {
-      const parts = rows.map(row => `${row.short} ${row.value === null ? '无数据' : `${Math.round(row.value.percent)}%`}`)
+      const parts = rows.map((row) => {
+        if (row.value === null) return `${row.short} 无数据`
+        const percent = Math.round(row.value.percent)
+        return isExhausted(row.value) ? `${row.short} ${percent}%，已用完` : `${row.short} ${percent}%`
+      })
       return `模型额度：${parts.join('，')}`
     }
 
@@ -259,14 +305,13 @@ window.__ModuleLoader__.load({
       const active = snapshot?.active ?? null
       const usage = snapshot?.usage ?? null
       const rows = WINDOWS.map(def => ({ ...def, value: usage?.[def.key] ?? null }))
-      const worst = rows.reduce((max, row) => (row.value === null ? max : Math.max(max, row.value.percent)), 0)
+      const exhausted = rows.some(row => isExhausted(row.value))
       const loading = snapshot === null
       const failed = snapshot?.ok === false || (snapshot?.error !== undefined && snapshot?.error !== null)
 
       if (loading || active === null) return null
 
       const refresh = () => { setNonce(value => value + 1) }
-      const pillTone = toneOf(worst)
       const ariaLabel = usage === null
         ? `模型额度不可用：${snapshot?.error?.message ?? '暂无数据'}`
         : summaryOf(rows)
@@ -281,20 +326,27 @@ window.__ModuleLoader__.load({
         title: active.label,
         onClick: () => { setOpen(value => !value) },
       },
-      h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' },
-        h('path', {
-          d: 'M8 1.6a6.4 6.4 0 1 1-6.02 8.58l1.86-.66A4.4 4.4 0 1 0 8 3.6z',
-          fill: 'currentColor',
-        }),
-        h('path', { d: 'M3 3.4l4.3 4.3-1.3 1.3L1.7 4.7z', fill: 'currentColor' })),
-      active !== null && usage === null
-        ? h('span', { className: failed ? 'mu-danger' : undefined }, '额度 —')
+      exhausted
+        ? h('svg', { viewBox: '0 0 16 16', className: 'mu-t-danger', 'aria-hidden': 'true', focusable: 'false' },
+          h('path', { d: 'M8 1.4 15 14H1z', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4, 'stroke-linejoin': 'round' }),
+          h('path', { d: 'M8 5.6v4.1', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' }),
+          h('circle', { cx: 8, cy: 11.9, r: 0.85, fill: 'currentColor' }))
+        : h('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' },
+          h('path', {
+            d: 'M8 1.6a6.4 6.4 0 1 1-6.02 8.58l1.86-.66A4.4 4.4 0 1 0 8 3.6z',
+            fill: 'currentColor',
+          }),
+          h('path', { d: 'M3 3.4l4.3 4.3-1.3 1.3L1.7 4.7z', fill: 'currentColor' })),
+      usage === null
+        ? h('span', { className: failed ? 'mu-t-danger' : undefined }, '额度 —')
         : rows.map((row, index) => h(React.Fragment, { key: row.key },
           index > 0 ? h('span', { className: 'mu-sep', 'aria-hidden': 'true' }, '·') : null,
-          h('span', { className: `${toneOf(row.value?.percent ?? NaN)}` },
-            row.short,
-            ' ',
-            row.value === null ? '—' : `${Math.round(row.value.percent)}%`))))
+          h('span', {
+            className: toneClass(isExhausted(row.value) ? 'danger' : tierOf(row.value?.percent ?? NaN)) || undefined,
+          },
+          row.short,
+          ' ',
+          row.value === null ? '—' : `${Math.round(row.value.percent)}%`))))
 
       if (!open) return pill
 
@@ -316,27 +368,38 @@ window.__ModuleLoader__.load({
         },
         h('div', { className: 'mu-title' },
           h('span', null, active.label),
-          h('span', null, '订阅额度')),
+          h('span', { className: exhausted ? 'mu-t-danger' : undefined },
+            exhausted ? '⚠ 已用完' : '订阅额度')),
         h('div', { className: 'mu-rule', 'aria-hidden': 'true' }),
         usage === null
           ? h('div', { className: 'mu-error' }, snapshot?.error?.message ?? '暂时无法获取用量')
-          : rows.map(row => h(React.Fragment, { key: row.key },
-            h('div', { className: 'mu-row' },
-              h('span', { className: 'mu-name' }, row.name),
-              h('span', { className: 'mu-bar' },
-                h('i', {
-                  className: `mu-fill ${toneOf(row.value?.percent ?? NaN)}`.trim(),
-                  style: { width: `${row.value === null ? 0 : Math.max(2, Math.round(row.value.percent))}%` },
-                })),
-              h('span', { className: 'mu-pct' }, row.value === null ? '—' : `${Math.round(row.value.percent)}%`)),
-            h('div', { className: 'mu-reset' },
-              row.value === null
-                ? '无数据'
-                : [
-                  row.value.status !== 'ok' ? `状态 ${row.value.status}` : null,
-                  formatClock(row.value.resetsAt) === null ? null : `${formatClock(row.value.resetsAt)} 重置`,
-                  formatRemaining(row.value.resetsAt, now),
-                ].filter(Boolean).join(' · ')))),
+          : rows.map((row) => {
+            const spent = isExhausted(row.value)
+            const rowTone = spent ? 'danger' : tierOf(row.value?.percent ?? NaN)
+            const clock = formatClock(row.value?.resetsAt ?? null)
+            const reset = spent
+              ? (clock === null ? '已用完，等待重置' : `已用完，等待 ${clock} 重置`)
+              : [
+                row.value !== null && row.value.status !== 'ok' && row.value.status !== 'unknown'
+                  ? `状态 ${row.value.status}`
+                  : null,
+                clock === null ? null : `${clock} 重置`,
+                formatRemaining(row.value?.resetsAt ?? null, now),
+              ].filter(Boolean).join(' · ')
+            return h(React.Fragment, { key: row.key },
+              h('div', { className: 'mu-row' },
+                h('span', { className: spent ? 'mu-name mu-t-danger' : 'mu-name' },
+                  spent ? `⚠ ${row.name}` : row.name),
+                h('span', { className: 'mu-bar' },
+                  h('i', {
+                    className: fillClass(rowTone),
+                    style: { width: `${row.value === null ? 0 : Math.max(2, Math.round(row.value.percent))}%` },
+                  })),
+                h('span', { className: `mu-pct ${toneClass(rowTone)}`.trim() },
+                  row.value === null ? '—' : `${Math.round(row.value.percent)}%`)),
+              h('div', { className: `mu-reset ${rowTone === 'danger' ? 'mu-t-danger' : ''}`.trim() },
+                row.value === null ? '无数据' : reset))
+          }),
         h('div', { className: 'mu-note' }, '订阅级用量，不区分模型；数据来自用量端点'),
         h('div', { className: 'mu-foot' },
           h('span', null, age === null ? '尚未成功获取' : `更新于 ${age < 60 ? `${age} 秒前` : `${Math.round(age / 60)} 分钟前`}`),
