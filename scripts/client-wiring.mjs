@@ -55,11 +55,16 @@ const ctx = {
 }
 plugin.apply(ctx)
 
-if (registered.length !== 1) throw new Error(`expected one registration, got ${registered.length}`)
-const [{ options, component }] = registered
-if (options.name !== 'conversation.composer.dock') throw new Error(`wrong slot: ${options.name}`)
-if (options.id !== 'model-usage') throw new Error(`wrong id: ${options.id}`)
-if (typeof component !== 'function') throw new Error('registration has no component')
+const expected = ['conversation.composer.dock', 'plugins.detail.badge', 'plugins.detail.section']
+const slots = registered.map(entry => entry.options.name).sort()
+if (slots.join(',') !== expected.slice().sort().join(',')) throw new Error(`unexpected slots: ${slots.join(',')}`)
+for (const entry of registered) {
+  if (typeof entry.component !== 'function') throw new Error(`${entry.options.name} has no component`)
+  if (typeof entry.options.id !== 'string') throw new Error(`${entry.options.name} has no id`)
+}
+const dock = registered.find(entry => entry.options.name === 'conversation.composer.dock')
+if (dock.options.id !== 'model-usage') throw new Error(`wrong id: ${dock.options.id}`)
+const component = dock.component
 
 const tree = component({ useProjection: () => undefined })
 if (tree === null || tree === undefined) throw new Error('entry rendered nothing at all')
@@ -70,4 +75,11 @@ if (typeof inner?.type !== 'function') throw new Error('entry does not wrap the 
 const pill = inner.type(inner.props)
 if (pill !== null) throw new Error('a session without a snapshot must render nothing')
 
-console.log('client wiring ok:', JSON.stringify(options))
+// The plugin-page contributions must ignore somebody else's page.
+const foreign = { subject: { kind: 'row', pkg: { name: 'dsh-doc-review' } } }
+const badge = registered.find(entry => entry.options.name === 'plugins.detail.badge')
+if (badge.component(foreign) !== null) throw new Error('badge rendered for a foreign package')
+const section = registered.find(entry => entry.options.name === 'plugins.detail.section')
+if (section.component(foreign) !== null) throw new Error('section rendered for a foreign package')
+
+console.log('client wiring ok:', registered.map(entry => `${entry.options.name}#${entry.options.id}`).join(' '))

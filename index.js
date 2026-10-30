@@ -21,8 +21,15 @@
  *
  * @module dsh-model-usage
  */
+import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import z from '@deepseek-ai/schemastery'
-import { meterForProvider, normalizeMeters, parseUsagePayload, usageUrl, UsageFailure } from './usage.js'
+import { compareVersion, describeRelease, meterForProvider, normalizeMeters, parseUsagePayload, usageUrl, UsageFailure } from './usage.js'
 
 export const name = 'dsh-model-usage'
 
@@ -31,6 +38,31 @@ export const inject = ['webServer', 'credentials']
 
 /** Loopback-only snapshot route the Client half polls. */
 export const SNAPSHOT_PATH = '/api/dsh-model-usage'
+
+/** Loopback-only release/update route: GET status, POST to pull. */
+export const UPDATE_PATH = '/api/dsh-model-usage/update'
+
+const DEFAULT_REPO = 'kabarryo/dsh-model-usage'
+const DEFAULT_CHECK_HOURS = 6
+const UPDATE_TIMEOUT_MS = 10_000
+
+/** Directory this module was loaded from: the git checkout the updater pulls. */
+const ROOT_DIR = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Read the installed version without an async hop; a missing or malformed
+ * manifest yields 0.0.0 so the updater still reports the remote tag.
+ * @param {string} dir - package directory.
+ * @returns {string} the version string.
+ */
+function readVersionSync(dir) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0'
+  } catch { return '0.0.0' }
+}
+
+const PLUGIN_VERSION = readVersionSync(ROOT_DIR)
 
 const DEFAULT_REFRESH_SECONDS = 60
 const DEFAULT_TIMEOUT_MS = 8000
@@ -66,6 +98,8 @@ export const Config = z.object({
   meters: z.array(MeterConfig),
   refreshSeconds: z.number().default(DEFAULT_REFRESH_SECONDS),
   timeoutMs: z.number().default(DEFAULT_TIMEOUT_MS),
+  repo: z.string().default(DEFAULT_REPO),
+  checkIntervalHours: z.number().default(DEFAULT_CHECK_HOURS),
 })
 
 /**
@@ -231,7 +265,153 @@ function createHub({ meters, credentials, refreshMs, timeoutMs, log }) {
 }
 
 /**
- * Activate the Host half: one route, one event listener.
+ * Release checker plus fast-forward updater for one git checkout.
+ *
+ * The check is rate-limited by the interval and by a state file, so a restart
+ * storm cannot hammer the GitHub API; the update itself is a plain
+ * `git pull --ff-only`, never a shell string, so nothing user-supplied reaches
+ * the command line.
+ * @param {object} options - updater options.
+ * @param {string} options.rootDir - the checkout that serves this plugin.
+ * @param {string} options.version - installed version at load time.
+ * @param {string} options.repo - `owner/name` queried for the latest release.
+ * @param {number} options.intervalMs - minimum gap between network checks.
+ * @param {string} options.stateFile - JSON file holding the last check.
+ * @param {(message: string, error?: unknown) => void} options.log - diagnostics sink.
+ * @returns {{ status: () => object, check: (force?: boolean) => Promise<object>, applyUpdate: () => Promise<object> }} the updater face.
+ */
+function createUpdater({ rootDir, version, repo, intervalMs, stateFile, log }) {
+  let state = { checkedAt: 0, latest: null, url: null, notes: null, publishedAt: null, error: null }
+  let hydrated = null
+  let running = null
+  let checking = null
+
+  /** Load the persisted check once. */
+  const hydrate = async () => {
+    if (hydrated !== null) return hydrated
+    hydrated = (async () => {
+      try {
+        const raw = JSON.parse(await readFile(stateFile, 'utf8'))
+        if (raw !== null && typeof raw === 'object') state = { ...state, ...raw, error: null }
+      } catch { /* first run, or an unreadable state file: start clean */ }
+    })()
+    return hydrated
+  }
+
+  /** Persist the current check; a failure only costs one extra request later. */
+  const persist = async () => {
+    try {
+      await mkdir(dirname(stateFile), { recursive: true })
+      await writeFile(stateFile, JSON.stringify(state))
+    } catch (error) { log('[dsh-model-usage] update state not saved', error) }
+  }
+
+  /** @returns {object} the Client-facing view of the last check. */
+  const status = () => ({
+    current: version,
+    latest: state.latest,
+    available: typeof state.latest === 'string' && compareVersion(state.latest, version) > 0,
+    url: state.url,
+    notes: state.notes,
+    publishedAt: state.publishedAt,
+    checkedAt: state.checkedAt === 0 ? null : state.checkedAt,
+    error: state.error,
+    busy: running !== null,
+    repo,
+  })
+
+  /**
+   * Ask GitHub for the latest release when the cache went stale.
+   * @param {boolean} [force] - ignore the interval.
+   * @returns {Promise<object>} the resulting status.
+   */
+  async function check(force = false) {
+    await hydrate()
+    const age = Date.now() - (state.checkedAt === 0 ? 0 : state.checkedAt)
+    if (!force && age < intervalMs) return status()
+    // Two pollers can reach the stale window together; one request answers both.
+    if (checking !== null) return checking
+    checking = (async () => {
+    try {
+      const response = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers: { accept: 'application/vnd.github+json', 'user-agent': `dsh-model-usage/${version}` },
+        signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
+      })
+      if (response.status === 404) {
+        state = { ...state, checkedAt: Date.now(), latest: null, url: null, notes: null, publishedAt: null, error: null }
+      } else if (!response.ok) {
+        throw new UsageFailure('github', `GitHub 返回 ${response.status}`)
+      } else {
+        const release = describeRelease(version, await response.json())
+        state = {
+          ...state,
+          checkedAt: Date.now(),
+          error: null,
+          latest: release?.latest ?? null,
+          url: release?.url ?? null,
+          notes: release?.notes ?? null,
+          publishedAt: release?.publishedAt ?? null,
+        }
+      }
+    } catch (error) {
+      const failure = error instanceof UsageFailure ? error : new UsageFailure('github', '无法访问 GitHub')
+      state = { ...state, checkedAt: Date.now(), error: failure.message }
+      log('[dsh-model-usage] release check failed', error)
+    }
+    await persist()
+    return status()
+    })()
+    try { return await checking } finally { checking = null }
+  }
+
+  /**
+   * Fast-forward the checkout and report what changed.
+   * @returns {Promise<{ from: string, to: string, upToDate: boolean, changed: string[], restartRequired: boolean }>} the outcome.
+   */
+  async function applyUpdate() {
+    if (running !== null) throw new UsageFailure('busy', '已有一次更新在进行')
+    running = (async () => {
+      const git = args => new Promise((resolve, reject) => {
+        execFile('git', ['-C', rootDir, ...args], { timeout: 60_000, windowsHide: true }, (error, stdout, stderr) => {
+          if (error !== null) {
+            const detail = String(stderr ?? '').trim() || error.message || 'git 执行失败'
+            reject(new UsageFailure('git', detail.slice(0, 400)))
+            return
+          }
+          resolve(String(stdout))
+        })
+      })
+      let inside = 'false'
+      try { inside = (await git(['rev-parse', '--is-inside-work-tree'])).trim() } catch { inside = 'false' }
+      if (inside !== 'true') throw new UsageFailure('not-git', '插件目录不是 git 仓库，无法自动更新；请手动 git pull')
+
+      const before = (await git(['rev-parse', 'HEAD'])).trim()
+      const from = readVersionSync(rootDir)
+      try {
+        await git(['pull', '--ff-only', '--quiet'])
+      } catch (error) {
+        throw error instanceof UsageFailure ? error : new UsageFailure('pull', 'git pull 失败')
+      }
+      const after = (await git(['rev-parse', 'HEAD'])).trim()
+      if (before === after) return { from, to: from, upToDate: true, changed: [], restartRequired: false }
+
+      const changed = (await git(['diff', '--name-only', before, after]))
+        .split('\n').map(line => line.trim()).filter(line => line !== '')
+      // Client-only files take effect on a page refresh; anything else is loaded
+      // by the Host process and needs a restart.
+      const restartRequired = changed.some(file => !(
+        file === 'client.js' || file === 'icon.svg' || file === 'README.md' || file.startsWith('locale/')
+      ))
+      return { from, to: readVersionSync(rootDir), upToDate: false, changed, restartRequired }
+    })()
+    try { return await running } finally { running = null }
+  }
+
+  return { status, check, applyUpdate }
+}
+
+/**
+ * Activate the Host half: two routes, one event listener.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  * @param {{ meters?: unknown, refreshSeconds?: number, timeoutMs?: number }} [rawConfig] - validated config.
  * @returns {void}
@@ -250,6 +430,14 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   const hub = createHub({ meters, credentials: ctx.credentials, refreshMs: refreshSeconds * 1000, timeoutMs, log })
+  const updater = createUpdater({
+    rootDir: ROOT_DIR,
+    version: PLUGIN_VERSION,
+    repo: typeof rawConfig.repo === 'string' && rawConfig.repo.trim() !== '' ? rawConfig.repo.trim() : DEFAULT_REPO,
+    intervalMs: Math.max(1, Number.isFinite(rawConfig.checkIntervalHours) ? rawConfig.checkIntervalHours : DEFAULT_CHECK_HOURS) * 3_600_000,
+    stateFile: join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'model-usage', 'update-check.json'),
+    log,
+  })
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -273,6 +461,9 @@ export function apply(ctx, rawConfig = {}) {
           return
         }
         const entry = await hub.read(meter, { force: query.get('force') === '1' })
+        // Interval-guarded: the first poll of a stale window starts one check
+        // in the background, every later poll returns before the network.
+        void updater.check(false)
         sendJson(res, 200, {
           ok: true,
           now: Date.now(),
@@ -280,10 +471,41 @@ export function apply(ctx, rawConfig = {}) {
           usage: entry.usage,
           fetchedAt: entry.fetchedAt,
           error: entry.error,
+          update: updater.status(),
         })
       } catch (error) {
         log('[dsh-model-usage] snapshot failed', error)
         sendJson(res, 500, { ok: false, code: 'internal', message: '用量快照生成失败' })
+      }
+    },
+  }))
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: UPDATE_PATH,
+    handler: async (req, res) => {
+      if (!isLoopback(req)) {
+        sendJson(res, 403, { ok: false, code: 'loopback-only', message: '只接受本机请求' })
+        return
+      }
+      const method = req.method ?? 'GET'
+      if (method !== 'GET' && method !== 'POST') {
+        sendJson(res, 405, { ok: false, code: 'method-not-allowed', message: '只支持 GET / POST' })
+        return
+      }
+      try {
+        if (method === 'POST') {
+          const result = await updater.applyUpdate()
+          await updater.check(true)
+          sendJson(res, 200, { ok: true, ...result, status: updater.status() })
+          return
+        }
+        const query = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams
+        sendJson(res, 200, { ok: true, status: await updater.check(query.get('force') === '1') })
+      } catch (error) {
+        const failure = error instanceof UsageFailure ? error.toJSON() : { code: 'internal', message: '更新失败' }
+        log('[dsh-model-usage] update failed', error)
+        sendJson(res, 200, { ok: false, error: failure, status: updater.status() })
       }
     },
   }))

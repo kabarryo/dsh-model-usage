@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { apply, SNAPSHOT_PATH } from '../index.js'
+import { apply, SNAPSHOT_PATH, UPDATE_PATH } from '../index.js'
 
 /**
  * Read one credential the same way the Host's credential seam would.
@@ -35,9 +35,11 @@ const ctx = {
 }
 
 apply(ctx, {})
-if (routes.length !== 1) throw new Error(`expected one route, got ${routes.length}`)
-const route = routes[0]
-console.log(`route: ${route.path} (${route.kind})`)
+if (routes.length !== 2) throw new Error(`expected two routes, got ${routes.length}`)
+const route = routes.find(entry => entry.path === SNAPSHOT_PATH)
+const updateRoute = routes.find(entry => entry.path === UPDATE_PATH)
+if (route === undefined || updateRoute === undefined) throw new Error('missing route')
+console.log(`routes: ${route.path}, ${updateRoute.path}`)
 
 /**
  * Invoke the registered handler with fake Node req/res objects.
@@ -97,3 +99,33 @@ if (messageEvent === undefined) throw new Error('missing session/event listener'
 messageEvent.handler({}, { type: 'assistant/message', data: { message: { source: { provider: 'opencode-go' } } } })
 messageEvent.handler({}, { type: 'tool/call', data: {} })
 console.log('dirty marking ok')
+
+/**
+ * Drive the update route with fake req/res.
+ * @param {string} method - HTTP method.
+ * @param {string} query - query string including '?'.
+ * @returns {Promise<{ status: number, body: any }>} captured response.
+ */
+function callUpdate(method, query = '') {
+  return new Promise((resolve) => {
+    const req = { method, url: UPDATE_PATH + query, socket: { remoteAddress: '127.0.0.1' } }
+    const res = {
+      status: 0,
+      writeHead(status) { this.status = status },
+      end(body) { resolve({ status: this.status, body: JSON.parse(body) }) },
+    }
+    void updateRoute.handler(req, res)
+  })
+}
+
+const status = await callUpdate('GET', '?force=1')
+console.log('update status:', status.status, JSON.stringify(status.body.status))
+if (status.body.ok !== true) throw new Error('update status failed')
+if (typeof status.body.status.current !== 'string') throw new Error('missing current version')
+if (status.body.status.available !== false) throw new Error('a published version must not look available from the checkout')
+if (typeof status.body.status.repo !== 'string') throw new Error('missing repo')
+
+const pulled = await callUpdate('POST')
+console.log('update apply:', pulled.status, JSON.stringify({ ok: pulled.body.ok, upToDate: pulled.body.upToDate, from: pulled.body.from, to: pulled.body.to }))
+if (pulled.body.ok !== true) throw new Error(`update apply failed: ${JSON.stringify(pulled.body.error)}`)
+if (typeof pulled.body.restartRequired !== 'boolean') throw new Error('missing restartRequired')

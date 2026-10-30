@@ -2,8 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  compareVersion,
+  describeRelease,
   meterForProvider,
   normalizeMeters,
+  parseVersion,
   parseUsagePayload,
   usageUrl,
   UsageFailure,
@@ -93,4 +96,46 @@ test('routes a provider to its meter, and an unknown route to no meter', () => {
 test('builds the usage URL without doubling the slash', () => {
   assert.equal(usageUrl({ baseURL: 'https://opencode.ai/zen/go/v1/' }), 'https://opencode.ai/zen/go/v1/usage')
   assert.equal(usageUrl({ baseURL: 'https://opencode.ai/zen/go/v1' }), 'https://opencode.ai/zen/go/v1/usage')
+})
+
+test('parses tags with and without the v prefix, rejects loose text', () => {
+  assert.deepEqual(parseVersion('v0.1.3'), [0, 1, 3])
+  assert.deepEqual(parseVersion('0.1.3'), [0, 1, 3])
+  assert.deepEqual(parseVersion('v1.10.2-rc.1'), [1, 10, 2])
+  assert.equal(parseVersion('latest'), null)
+  assert.equal(parseVersion('v0.1'), null)
+  assert.equal(parseVersion(undefined), null)
+})
+
+test('compares versions numerically, not as text', () => {
+  assert.equal(compareVersion('v0.1.10', 'v0.1.9'), 1)
+  assert.equal(compareVersion('v0.2.0', 'v0.1.9'), 1)
+  assert.equal(compareVersion('v0.1.3', 'v0.1.3'), 0)
+  assert.equal(compareVersion('v0.1.2', 'v0.1.3'), -1)
+  // An unparseable side is not evidence of a newer release.
+  assert.equal(compareVersion('nightly', 'v0.1.3'), 0)
+})
+
+test('projects a release onto the updater view', () => {
+  const view = describeRelease('0.1.2', {
+    tag_name: 'v0.1.3',
+    html_url: 'https://example.test/tag',
+    body: '- 一条变更',
+    published_at: '2026-10-30T00:00:00Z',
+  })
+  assert.equal(view.latest, 'v0.1.3')
+  assert.equal(view.available, true)
+  assert.equal(view.notes, '- 一条变更')
+  assert.equal(view.url, 'https://example.test/tag')
+})
+
+test('the running version is never offered as an update', () => {
+  assert.equal(describeRelease('0.1.3', { tag_name: 'v0.1.3' }).available, false)
+  assert.equal(describeRelease('0.2.0', { tag_name: 'v0.1.3' }).available, false)
+})
+
+test('a release without a tag is not a release', () => {
+  assert.equal(describeRelease('0.1.2', {}), null)
+  assert.equal(describeRelease('0.1.2', null), null)
+  assert.equal(describeRelease('0.1.2', { tag_name: '' }), null)
 })

@@ -140,3 +140,52 @@ function text(value) {
 export function usageUrl(meter) {
   return `${meter.baseURL.replace(/\/+$/, '')}/usage`
 }
+
+/**
+ * Parse a release tag or a package version into three numbers.
+ * @param {unknown} raw - text such as `v0.1.3` or `0.1.3`.
+ * @returns {[number, number, number] | null} the numbers, or null when unparseable.
+ */
+export function parseVersion(raw) {
+  if (typeof raw !== 'string') return null
+  const match = raw.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/)
+  if (match === null) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+/**
+ * Compare two versions numerically.
+ * @param {unknown} a - left version.
+ * @param {unknown} b - right version.
+ * @returns {-1 | 0 | 1} negative when `a` precedes `b`; 0 when either is unparseable.
+ */
+export function compareVersion(a, b) {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  if (left === null || right === null) return 0
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * Project a GitHub release body onto the updater's view.
+ * @param {string} current - the installed version.
+ * @param {unknown} release - `releases/latest` JSON.
+ * @returns {{ latest: string, url: string | null, notes: string | null, publishedAt: string | null, available: boolean } | null}
+ * the projection, or null when the body carries no tag.
+ */
+export function describeRelease(current, release) {
+  if (release === null || typeof release !== 'object') return null
+  const latest = typeof release.tag_name === 'string' ? release.tag_name.trim() : ''
+  if (latest === '') return null
+  const notes = typeof release.body === 'string' ? release.body.trim() : ''
+  return {
+    latest,
+    url: typeof release.html_url === 'string' ? release.html_url : null,
+    notes: notes === '' ? null : notes.slice(0, 1500),
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
+    available: compareVersion(latest, current) > 0,
+  }
+}

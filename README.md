@@ -107,12 +107,34 @@ plugin_manager install_bundle target=/绝对路径/dsh-model-usage
 - 切换模型后，轮询里带的 `provider` 变了，立刻改用新 meter。
 - 有旧数据时先返回旧值、后台刷新，不做阻塞等待。
 
+## 自动更新
+
+Host 半每 6 小时（可配置）查一次 GitHub Releases，结果缓存在 `$DSH_HOME/model-usage/update-check.json`，重启不会立刻重查，也不会频繁打 GitHub API。发现新版时：
+
+- pill 展开面板底部出现「新版本 vX 已发布 · 更新」；
+- 插件管理页对应的徽标与区块出现同样的提示和按钮。
+
+点「更新」执行 `git pull --ff-only`，要求插件目录是 git 工作区（按上面的 git clone 方式安装即可满足）。完成后区分两种情况：
+
+- 变更只涉及客户端文件（`client.js`、`locale/`、`icon.svg`）→ 面板提示「刷新页面」，点一下就生效；
+- 变更涉及 Host 文件（`index.js`、`usage.js`、`package.json`、`cordis.patch.yml`）→ 提示「重启 DSH 后生效」。
+
+失败会给出具体原因（不是 git 仓库、拉取冲突、网络不通），不静默吞掉。
+
+```yaml
+config:
+  repo: kabarryo/dsh-model-usage   # 被查询的仓库，默认为此
+  checkIntervalHours: 6            # 检查间隔，默认 6 小时
+```
+
 ## 已知限制
 
 - 只统计订阅端点报告的数量，与 Console 页面同源；端点未公开文档，形状变了会降级为「暂不可用」而不是显示错数。
 - 不区分模型，只有订阅级百分比。
 - 非 opencode-go 订阅不显示 pill。
 - 依赖 `resetsAt` 做倒计时；该字段缺失时只显示百分比。
+- 自动更新只对 git 工作区有效；用压缩包或 npm 安装的目录只会提示手动更新。
+- 更新不会自动重启进程：Host 侧改动需要退出并重开 DSH。
 
 ## 卸载
 

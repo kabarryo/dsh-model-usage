@@ -24,6 +24,8 @@ window.__ModuleLoader__.load({
     const { createPortal } = require('react-dom')
 
     const ENDPOINT = '/api/dsh-model-usage'
+    const UPDATE_ENDPOINT = '/api/dsh-model-usage/update'
+    const PLUGIN_NAME = 'dsh-model-usage'
     const POLL_MS = 3000
     const STYLE_ID = 'dsh-model-usage-style'
     const ICON_SIZE = 14
@@ -54,6 +56,13 @@ window.__ModuleLoader__.load({
 .mu-btn{border:0;padding:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:11px;cursor:pointer}
 .mu-btn:hover{text-decoration:underline}
 .mu-error{margin-top:10px;color:var(--dsw-alias-state-error-primary);line-height:16px}
+.mu-update{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.mu-update b{font-weight:500;color:var(--dsw-alias-label-primary)}
+.mu-badge{display:inline-flex;align-items:center;height:18px;padding:0 7px;border:1px solid var(--dsw-alias-state-warn-primary);border-radius:9px;color:var(--dsw-alias-state-warn-primary);font-size:10.5px;line-height:1;white-space:nowrap}
+.mu-section{margin-top:12px;padding:12px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mu-kv{display:flex;justify-content:space-between;gap:12px;line-height:20px}
+.mu-kv em{font-style:normal;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}
+.mu-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:10px}
 /* 五档用量色（绿 / 黄 / 橙 / 红 / 红+⚠）。放在最后，靠同权重的后手声明
    盖住 .mu-pct / .mu-name / .mu-reset 的静态色。橙色没有专用 token，用黄红
    混合；不支持 color-mix 的引擎退回上一行声明的黄色，不会出现空条。 */
@@ -187,6 +196,115 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Release status for one surface. The Host caches the GitHub answer, so
+     * calling this on open costs no network unless the interval elapsed.
+     * @param {boolean} enabled - whether this surface is visible.
+     * @returns {{ status: object | null, busy: boolean, result: object | null, refresh: Function, apply: Function }} face.
+     */
+    function useUpdate(enabled) {
+      const [status, setStatus] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [result, setResult] = useState(null)
+
+      const refresh = useCallback(async (force = false) => {
+        try {
+          const response = await fetch(`${UPDATE_ENDPOINT}${force ? '?force=1' : ''}`, { cache: 'no-store' })
+          const data = await response.json()
+          if (data !== null && data.ok === true && data.status) setStatus(data.status)
+        } catch { /* offline: the notice simply stays absent */ }
+      }, [])
+
+      useEffect(() => {
+        if (enabled) void refresh(false)
+      }, [enabled, refresh])
+
+      const apply = useCallback(async () => {
+        setBusy(true)
+        setResult(null)
+        try {
+          const response = await fetch(UPDATE_ENDPOINT, { method: 'POST' })
+          const data = await response.json()
+          setResult(data)
+          if (data !== null && data.status) setStatus(data.status)
+        } catch {
+          setResult({ ok: false, error: { message: '更新请求失败' } })
+        } finally {
+          setBusy(false)
+        }
+      }, [])
+
+      return { status, busy, result, refresh, apply }
+    }
+
+    /**
+     * One update line: the offer, the running state, or the outcome.
+     * @param {object} face - `useUpdate` face.
+     * @returns {object | null} the row, or null when there is nothing to say.
+     */
+    function updateRow(face) {
+      const { status, busy, result, refresh, apply } = face
+      if (busy) return h('div', { className: 'mu-update' }, h('span', null, '正在更新…'))
+      if (result !== null) {
+        if (result.ok !== true) {
+          return h('div', { className: 'mu-update' },
+            h('span', { className: 'mu-t-danger' }, result.error?.message ?? '更新失败'),
+            h('button', { type: 'button', className: 'mu-btn', onClick: () => { refresh(true) } }, '重试'))
+        }
+        if (result.upToDate === true) {
+          return h('div', { className: 'mu-update' }, h('span', null, `已是最新版本 ${result.to}`))
+        }
+        const done = `已更新到 ${result.to}`
+        return h('div', { className: 'mu-update' },
+          h('span', null, done),
+          result.restartRequired === true
+            ? h('span', { className: 'mu-t-warm' }, '重启 DSH 后生效')
+            : h('button', { type: 'button', className: 'mu-btn', onClick: () => { window.location.reload() } }, '刷新页面'))
+      }
+      if (status === null || status.available !== true) return null
+      return h('div', { className: 'mu-update' },
+        h('span', null, '新版本 ', h('b', null, status.latest), ' 已发布'),
+        h('button', { type: 'button', className: 'mu-btn', onClick: () => { void apply() } }, '更新'))
+    }
+
+    /**
+     * Badge beside the plugin page title; renders only for this package.
+     * @param {{ subject?: object }} props - detail page subject.
+     * @returns {object | null} the badge.
+     */
+    function UpdateBadge(props) {
+      const ours = props?.subject?.pkg?.name === PLUGIN_NAME
+      const face = useUpdate(ours)
+      if (!ours || face.status === null || face.status.available !== true) return null
+      return h('span', { className: 'mu-badge' }, `有新版 ${face.status.latest}`)
+    }
+
+    /**
+     * Section under the plugin page's own content: version facts and controls.
+     * @param {{ subject?: object }} props - detail page subject.
+     * @returns {object | null} the section.
+     */
+    function UpdateSection(props) {
+      const ours = props?.subject?.pkg?.name === PLUGIN_NAME
+      const face = useUpdate(ours)
+      if (!ours) return null
+      const status = face.status
+      const checked = status?.checkedAt == null
+        ? '尚未检查'
+        : new Date(status.checkedAt).toLocaleString('zh-CN', { hour12: false })
+      return h('div', { className: 'mu-section' },
+        h('div', { className: 'mu-kv' }, h('span', null, '当前版本'), h('em', null, status?.current ?? '—')),
+        h('div', { className: 'mu-kv' }, h('span', null, '最新版本'), h('em', null, status?.latest ?? '—')),
+        h('div', { className: 'mu-kv' }, h('span', null, '上次检查'), h('em', null, checked)),
+        status?.error === null || status?.error === undefined
+          ? null
+          : h('div', { className: 'mu-kv' }, h('span', null, '检查失败'), h('em', { className: 'mu-t-danger' }, status.error)),
+        updateRow(face),
+        h('div', { className: 'mu-actions' },
+          h('button', { type: 'button', className: 'mu-btn', onClick: () => { void face.refresh(true) } }, '检查更新'),
+          h('button', { type: 'button', className: 'mu-btn', onClick: () => { void face.apply() } }, '更新')))
+    }
+
+    /**
      * Contain any render failure to this pill: a broken widget must not take
      * the composer dock down with it.
      */
@@ -229,6 +347,8 @@ window.__ModuleLoader__.load({
       const [snapshot, setSnapshot] = useState(null)
       const [nonce, setNonce] = useState(0)
       const [open, setOpen] = useState(false)
+      // Release checks ride the dialog's own open state, not the 3 s poll.
+      const update = useUpdate(open)
       const [pos, setPos] = useState(null)
       const [, setClock] = useState(0)
       const anchorRef = useRef(null)
@@ -401,6 +521,7 @@ window.__ModuleLoader__.load({
                 row.value === null ? '无数据' : reset))
           }),
         h('div', { className: 'mu-note' }, '订阅级用量，不区分模型；数据来自用量端点'),
+        updateRow(update),
         h('div', { className: 'mu-foot' },
           h('span', null, age === null ? '尚未成功获取' : `更新于 ${age < 60 ? `${age} 秒前` : `${Math.round(age / 60)} 分钟前`}`),
           h('button', { type: 'button', className: 'mu-btn', onClick: refresh }, '刷新'))), document.body))
@@ -414,6 +535,18 @@ window.__ModuleLoader__.load({
           id: 'model-usage',
           order: 1,
         }, ModelUsageEntry))
+        // Plugin manager: a badge beside the page title and a section with the
+        // version facts and the update controls.
+        ctx.slots.inject('plugins.detail.badge', () => ctx.slots.register({
+          name: 'plugins.detail.badge',
+          id: 'model-usage-update',
+          order: 10,
+        }, UpdateBadge))
+        ctx.slots.inject('plugins.detail.section', () => ctx.slots.register({
+          name: 'plugins.detail.section',
+          id: 'model-usage-update',
+          order: 10,
+        }, UpdateSection))
       },
     }
   },
